@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Circuit G Viewer</title>
+<style>
+:root{--bg:#101112;--pn:#1a1b1d;--ln:#35373b;--fg:#eceae4;--mut:#8a8a85;--sp:#38bdf8;--lg:#ffc928;--lo:#7f8ea3;--ac:#ff3b4a}
+*{box-sizing:border-box}
+body{margin:0;padding:10px;background:var(--bg);color:var(--fg);font:14px/1.4 "Hiragino Sans","Helvetica Neue",sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px}
+select,input[type=file]{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--ln);border-radius:4px;padding:6px}
+select:focus-visible,input:focus-visible{outline:3px solid var(--ac)}
+label{color:var(--mut);font-size:13px}
+#st{color:var(--mut);font-size:13px}
+main{display:grid;gap:10px;grid-template-columns:minmax(0,1fr)}
+@media(min-width:900px){main{grid-template-columns:380px minmax(0,1fr)}}
+.col{display:grid;gap:10px;align-content:start}
+.p{background:var(--pn);border:1px solid var(--ln);border-radius:6px;padding:8px}
+.t{color:var(--mut);font-size:12px;margin-bottom:4px}
+canvas{display:block;width:100%}
+#map{aspect-ratio:4/3}#gg{aspect-ratio:1}#gr{height:380px;touch-action:pan-y;cursor:crosshair}
+#ro{font-variant-numeric:tabular-nums;font-size:15px;min-height:1.4em;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <input type="file" id="f" accept=".csv,text/csv" aria-label="CSVファイルを選択">
+  <label>ラップ <select id="lap"><option value="all">全て</option></select></label>
+  <label>平滑化 <input type="range" id="sm" min="1" max="31" step="2" value="9"></label>
+  <span id="st">CSVを選ぶと表示します。</span>
+</header>
+<main>
+  <div class="col">
+    <div class="p"><div class="t">走行ライン（色=横Gの大きさ：青→赤）</div><canvas id="map"></canvas></div>
+    <div class="p"><div class="t">Gサークル（横G：左右／前後G：上下）</div><canvas id="gg"></canvas></div>
+  </div>
+  <div class="p"><div class="t">車速（青）／ 横G（黄）／ 前後G（灰）　横軸=走行距離 m　※グラフをなぞると地図とGサークルが連動</div>
+    <canvas id="gr"></canvas><div id="ro"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let R=[],sel=[],ci=0,Rg=1.5,X1=1,mp=null;
+
+function ctx(c){const d=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+  if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d);}
+  const g=c.getContext('2d');g.setTransform(d,0,0,d,0,0);g.clearRect(0,0,w,h);return[g,w,h];}
+
+function parse(txt){
+  const L=txt.replace(/^\ufeff/,'').trim().split(/\r?\n/), h=L[0].split(',');
+  R=L.slice(1).map(l=>{const c=l.split(','),o={};h.forEach((k,i)=>o[k]=c[i]);
+    const n=k=>o[k]===''||o[k]==null?NaN:+o[k];
+    return{t:n('epoch_ms'),lat:n('lat_g'),lon:n('lon_g'),la:n('gps_lat'),lo:n('gps_lon'),v:n('speed_kmh'),gt:o.gps_time,lap:n('lap')||0};
+  }).filter(r=>isFinite(r.t)&&isFinite(r.lat));
+  let d=0;R.forEach((r,i)=>{if(i){d+=(isFinite(r.v)?r.v:0)/3.6*(r.t-R[i-1].t)/1000;}r.d=d;});
+  const laps=[...new Set(R.map(r=>r.lap))].sort((a,b)=>a-b);
+  $('lap').innerHTML='<option value="all">全て</option>'+laps.map(n=>'<option value="'+n+'">'+(n===0?'計測前（ラップ0）':'ラップ '+n)+'</option>').join('');
+  smooth();ci=0;update();
+}
+function smooth(){
+  const k=(+$('sm').value)>>1,pl=[0],po=[0];
+  R.forEach((r,i)=>{pl.push(pl[i]+r.lat);po.push(po[i]+r.lon);});
+  R.forEach((r,i)=>{const a=Math.max(0,i-k),b=Math.min(R.length,i+k+1);r.sl=(pl[b]-pl[a])/(b-a);r.so=(po[b]-po[a])/(b-a);});
+}
+function update(){
+  const L=$('lap').value;
+  sel=R.filter(r=>L==='all'||r.lap==L);
+  if(!sel.length){draw();return;}
+  const d0=sel[0].d;let m=0,vm=0,pk=0;
+  sel.forEach(r=>{r.x=r.d-d0;m=Math.max(m,Math.abs(r.sl),Math.abs(r.so));pk=Math.max(pk,Math.abs(r.sl));if(r.v>vm)vm=r.v;});
+  X1=sel[sel.length-1].x||1;Rg=Math.max(1.5,Math.ceil(m*2)/2);ci=Math.min(ci,sel.length-1);
+  $('st').textContent='最大横G '+pk.toFixed(2)+' G ／ 最高速 '+vm.toFixed(0)+' km/h ／ 距離 '+(X1/1000).toFixed(2)+' km';
+  draw();
+}
+
+function drawMap(){
+  const[g,w,h]=ctx($('map'));mp=null;
+  const F=[];let lg=null;
+  for(const r of sel){
+    if(!isFinite(r.la))continue;
+    if(r.gt!==lg){F.push({la:r.la,lo:r.lo,g:0});lg=r.gt;}
+    const f=F[F.length-1];f.g=Math.max(f.g,Math.abs(r.sl));
+  }
+  if(F.length<2)return;
+  const la0=F[0].la,lo0=F[0].lo,kx=Math.cos(la0*Math.PI/180)*111320,ky=110540;
+  const P=F.map(f=>[(f.lo-lo0)*kx,(f.la-la0)*ky]);
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  P.forEach(p=>{x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1]);});
+  const s=Math.min((w-24)/((x1-x0)||1),(h-24)/((y1-y0)||1)),ox=(w-(x1-x0)*s)/2-x0*s,oy=(h+(y1-y0)*s)/2+y0*s;
+  mp=r=>[(r.lo-lo0)*kx*s+ox,oy-(r.la-la0)*ky*s];
+  g.lineWidth=4;g.lineCap='round';
+  for(let i=0;i<P.length-1;i++){
+    const t=Math.min(F[i].g/1.5,1);
+    g.strokeStyle='hsl('+(205-205*t)+',90%,55%)';
+    g.beginPath();g.moveTo(P[i][0]*s+ox,oy-P[i][1]*s);g.lineTo(P[i+1][0]*s+ox,oy-P[i+1][1]*s);g.stroke();
+  }
+  const r=sel[ci];
+  if(r&&isFinite(r.la)){const[X,Y]=mp(r);g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.arc(X,Y,7,0,7);g.stroke();}
+}
+
+function drawGG(){
+  const[g,w]=ctx($('gg')),m=w/2,s=(m-14)/Rg;
+  g.strokeStyle='#35373b';g.fillStyle='#8a8a85';g.font='11px sans-serif';g.lineWidth=1;
+  for(let i=0.5;i<=Rg;i+=0.5){g.beginPath();g.arc(m,m,i*s,0,7);g.stroke();g.fillText(i.toFixed(1),m+i*s-16,m-3);}
+  g.beginPath();g.moveTo(m,0);g.lineTo(m,w);g.moveTo(0,m);g.lineTo(w,m);g.stroke();
+  const st=Math.max(1,Math.floor(sel.length/4000));
+  for(let i=0;i<sel.length;i+=st){const r=sel[i];g.fillStyle='hsla('+((r.lap*70+200)%360)+',85%,60%,.55)';g.fillRect(m+r.sl*s-1,m-r.so*s-1,2.5,2.5);}
+  const r=sel[ci];
+  if(r){g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.arc(m+r.sl*s,m-r.so*s,7,0,7);g.stroke();}
+}
+
+const GL=44,GR=8;
+function drawGr(){
+  const[g,w,h]=ctx($('gr'));
+  if(!sel.length)return;
+  const hs=Math.round(h*0.45),T=8;
+  let vm=0;sel.forEach(r=>{if(r.v>vm)vm=r.v;});vm=Math.ceil((vm||50)/50)*50;
+  const px=x=>GL+x/X1*(w-GL-GR),pv=v=>hs-8-(v/vm)*(hs-8-T),pg=G=>hs+10+(Rg-G)/(2*Rg)*(h-22-hs-10);
+  g.font='11px sans-serif';g.lineWidth=1;g.strokeStyle='#35373b';g.fillStyle='#8a8a85';
+  for(let v=0;v<=vm;v+=50){g.beginPath();g.moveTo(GL,pv(v));g.lineTo(w-GR,pv(v));g.stroke();g.fillText(v,4,pv(v)+4);}
+  for(let G=-Math.floor(Rg);G<=Rg;G+=1){g.beginPath();g.moveTo(GL,pg(G));g.lineTo(w-GR,pg(G));g.stroke();g.fillText(G+'G',4,pg(G)+4);}
+  const step=X1>3000?1000:X1>1000?500:100;
+  for(let x=0;x<=X1;x+=step){g.fillText(x+'m',px(x)-10,h-4);}
+  const st=Math.max(1,Math.floor(sel.length/(w*1.5)));
+  const ln=(col,yf)=>{g.strokeStyle=col;g.lineWidth=1.6;g.beginPath();let on=false;
+    for(let i=0;i<sel.length;i+=st){const r=sel[i],y=yf(r);if(!isFinite(y)){on=false;continue;}
+      on?g.lineTo(px(r.x),y):g.moveTo(px(r.x),y);on=true;}g.stroke();};
+  ln('#7f8ea3',r=>pg(r.so));ln('#38bdf8',r=>pv(r.v));ln('#ffc928',r=>pg(r.sl));
+  const r=sel[ci];
+  if(r){g.strokeStyle='#fff';g.lineWidth=1;g.beginPath();g.moveTo(px(r.x),0);g.lineTo(px(r.x),h-16);g.stroke();
+    $('ro').textContent=r.x.toFixed(0)+' m ／ '+(isFinite(r.v)?r.v.toFixed(0):'--')+' km/h ／ 横G '+r.sl.toFixed(2)+' ／ 前後G '+r.so.toFixed(2);}
+}
+function draw(){drawMap();drawGG();drawGr();}
+
+function seek(e){
+  if(!sel.length)return;
+  const b=$('gr').getBoundingClientRect(),x=(e.clientX-b.left-GL)/(b.width-GL-GR)*X1;
+  let a=0,z=sel.length-1;while(a<z){const m=(a+z)>>1;if(sel[m].x<x)a=m+1;else z=m;}
+  ci=a;draw();
+}
+$('gr').addEventListener('pointermove',seek);
+$('gr').addEventListener('pointerdown',seek);
+$('f').onchange=async e=>{const f=e.target.files[0];if(f)parse(await f.text());};
+$('lap').onchange=()=>{ci=0;update();};
+$('sm').oninput=()=>{if(R.length){smooth();update();}};
+addEventListener('resize',draw);
+</script>
+</body>
+</html>
