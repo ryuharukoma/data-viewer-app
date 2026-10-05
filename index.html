@@ -43,13 +43,14 @@ canvas{display:block;width:100%}
   <label>重心から 前(+)/後(−) <input type="number" id="pf" step="0.05" value="0"> m</label>
   <label>右(+)/左(−) <input type="number" id="pr" step="0.05" value="0"> m</label>
   <label><input type="checkbox" id="cc"> 横G・前後Gを補正する</label>
+  <label><input type="checkbox" id="fl"> 前後Gの上下を手動で反転</label>
   <label>取り付け <select id="mt"><option value="x">平置き（短辺が左右）</option><option value="y">平置き（長辺が左右）</option><option value="z">立てる（短辺が左右）</option></select></label>
   <span id="cs"></span>
 </div>
 <main>
   <div class="col">
     <div class="p"><div class="t">走行ライン（色=横Gの大きさ：青→赤）</div><canvas id="map"></canvas></div>
-    <div class="p"><div class="t">Gサークル（横G：左右／前後G：上下）</div><canvas id="gg"></canvas></div>
+    <div class="p"><div class="t">Gサークル（横G：左右／前後G：上下）<label style="float:right"><input type="checkbox" id="gl" checked> 線でつなぐ</label></div><canvas id="gg"></canvas></div>
     <div class="p"><div class="t">横G と ロール角（点の傾き＝ロール量）</div><canvas id="rs"></canvas></div>
   </div>
   <div class="p"><div class="t">車速（km/h）／G（横・前後）／傾き（ロール・ピッチ）　単位ごとに別グラフ・時間軸は共通　※なぞると地図とGサークルが連動</div>
@@ -106,24 +107,29 @@ function est(){
   }
   const rho=a=>a.n>=5?a.xy/Math.sqrt(a.xx*a.yy||1):0;
   const ra=rho(A),rb=rho(B),rc=rho(C),ok=Math.abs(ra)>0.3&&Math.abs(rb)>0.3&&Math.abs(rc)>0.3;
-  const E={sr:ra<0?-1:1,sf:rb<0?-1:1,sw:rc<0?-1:1,ok};
+  const okf=Math.abs(rb)>0.3,E={sr:ra<0?-1:1,sf:rb<0?-1:1,sw:rc<0?-1:1,ok,okf};
+  const fx=okf?' ／ 前後G: 加速が上（＋）になるよう自動で統一':' ／ 前後Gの向きは判定できないため記録時の設定のまま（必要なら手動で反転）';
   if(!F.length)E.msg='';
-  else if(ok)E.msg='符号を自動判定: 横G＋=' +(E.sr>0?'右':'左')+'旋回 ／ 前後G＋='+(E.sf>0?'加速':'減速')+' ／ ジャイロ÷GPS方位変化 = '+Math.abs(C.xy/C.yy).toFixed(2)+'（1付近が正常）';
-  else E.msg='符号を判定できません（走行中に曲がる・加減速するデータが必要）→ 補正は無効です';
+  else if(ok)E.msg='符号を自動判定: 横G＋='+(E.sr>0?'右':'左')+'旋回'+fx+' ／ ジャイロ÷GPS方位変化 = '+Math.abs(C.xy/C.yy).toFixed(2)+'（1付近が正常）';
+  else E.msg='符号を判定できません（走行中に曲がる・加減速するデータが必要）→ 位置補正は無効です'+fx;
   return E;
 }
 // 重心からずれた位置の加速度を、重心の値に直す（ヨー運動による分。高さ方向のずれは対象外）
 function applyCorr(k){
   const pf=+$('pf').value||0,pr=+$('pr').value||0,E=est();
   $('cs').textContent=E.msg;
-  if(!$('cc').checked||!E.ok||(!pf&&!pr))return;
-  const k2=Math.max(k,4),n=R.length,d2r=Math.PI/180;
-  R.forEach((r,i)=>{
-    const a=R[Math.max(0,i-k2)],b=R[Math.min(n-1,i+k2)],dt=(b.t-a.t)/1000;
-    const w=E.sw*r.sw*d2r,al=dt>0?E.sw*(b.sw-a.sw)/dt*d2r:0;   // ヨーレート rad/s（右旋回が正）, ヨー角加速度
-    r.sl=r.sl0+E.sr*((-al*pf+w*w*pr)/G);
-    r.so=r.so0+E.sf*((al*pr+w*w*pf)/G);
-  });
+  if($('cc').checked&&E.ok&&(pf||pr)){
+    const k2=Math.max(k,4),n=R.length,d2r=Math.PI/180;
+    R.forEach((r,i)=>{
+      const a=R[Math.max(0,i-k2)],b=R[Math.min(n-1,i+k2)],dt=(b.t-a.t)/1000;
+      const w=E.sw*r.sw*d2r,al=dt>0?E.sw*(b.sw-a.sw)/dt*d2r:0;   // ヨーレート rad/s（右旋回が正）, ヨー角加速度
+      r.sl=r.sl0+E.sr*((-al*pf+w*w*pr)/G);
+      r.so=r.so0+E.sf*((al*pr+w*w*pf)/G);
+    });
+  }
+  // 前後G: 加速を＋（Gサークルの上）に統一。GPSで判定できないときは記録時のまま。手動反転も可
+  const f=(E.okf?E.sf:1)*($('fl').checked?-1:1);
+  if(f<0)R.forEach(r=>{r.so=-r.so;r.so0=-r.so0;});
 }
 function update(keep){
   const L=$('lap').value;
@@ -166,8 +172,18 @@ function drawGG(){
   g.strokeStyle='#35373b';g.fillStyle='#8a8a85';g.font='11px sans-serif';g.lineWidth=1;
   for(let i=0.5;i<=Rg;i+=0.5){g.beginPath();g.arc(m,m,i*s,0,7);g.stroke();g.fillText(i.toFixed(1),m+i*s-16,m-3);}
   g.beginPath();g.moveTo(m,0);g.lineTo(m,w);g.moveTo(0,m);g.lineTo(w,m);g.stroke();
-  const st=Math.max(1,Math.floor(sel.length/4000));
-  for(let i=0;i<sel.length;i+=st){const r=sel[i];g.fillStyle='hsla('+((r.lap*70+200)%360)+',85%,60%,.55)';g.fillRect(m+r.sl*s-1,m-r.so*s-1,2.5,2.5);}
+  const col=r=>'hsla('+((r.lap*70+200)%360)+',85%,60%,';
+  if($('gl').checked){                       // 細い線でつなぐ（ラップごとに色分け、ラップの切れ目では線を切る）
+    const st=Math.max(1,Math.floor(sel.length/8000));let pl=null;
+    g.lineWidth=1;g.lineJoin='round';
+    for(let i=0;i<sel.length;i+=st){const r=sel[i],x=m+r.sl*s,y=m-r.so*s;
+      if(r.lap!==pl){if(pl!==null)g.stroke();g.beginPath();g.strokeStyle=col(r)+'.8)';g.moveTo(x,y);pl=r.lap;}
+      else g.lineTo(x,y);}
+    if(pl!==null)g.stroke();
+  }else{
+    const st=Math.max(1,Math.floor(sel.length/4000));
+    for(let i=0;i<sel.length;i+=st){const r=sel[i];g.fillStyle=col(r)+'.55)';g.fillRect(m+r.sl*s-1,m-r.so*s-1,2.5,2.5);}
+  }
   const r=sel[ci];
   if(r){g.strokeStyle='#fff';g.lineWidth=2;g.beginPath();g.arc(m+r.sl*s,m-r.so*s,7,0,7);g.stroke();}
 }
@@ -291,7 +307,8 @@ $('f').onchange=async e=>{const f=e.target.files[0];if(f)parse(await f.text());}
 $('xm').onchange=()=>update();
 $('lap').onchange=()=>{ci=0;update();};
 $('sm').oninput=()=>{if(R.length){smooth();update(true);}};
-['pf','pr','cc','mt'].forEach(id=>$(id).addEventListener('input',()=>{if(R.length){smooth();update(true);}}));
+['pf','pr','cc','mt','fl'].forEach(id=>$(id).addEventListener('input',()=>{if(R.length){smooth();update(true);}}));
+$('gl').addEventListener('input',draw);
 addEventListener('resize',draw);
 </script>
 </body>
