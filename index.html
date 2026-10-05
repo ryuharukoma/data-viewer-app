@@ -9,7 +9,7 @@
 *{box-sizing:border-box}
 body{margin:0;padding:10px;background:var(--bg);color:var(--fg);font:14px/1.4 "Hiragino Sans","Helvetica Neue",sans-serif}
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px}
-select,input[type=file]{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--ln);border-radius:4px;padding:6px}
+select,input[type=file],input[type=number]{font:inherit;color:var(--fg);background:var(--pn);border:1px solid var(--ln);border-radius:4px;padding:6px}
 select:focus-visible,input:focus-visible{outline:3px solid var(--ac)}
 label{color:var(--mut);font-size:13px}
 #st{color:var(--mut);font-size:13px}
@@ -19,7 +19,14 @@ main{display:grid;gap:10px;grid-template-columns:minmax(0,1fr)}
 .p{background:var(--pn);border:1px solid var(--ln);border-radius:6px;padding:8px}
 .t{color:var(--mut);font-size:12px;margin-bottom:4px}
 canvas{display:block;width:100%}
-#map,#rs{aspect-ratio:4/3}#gg{aspect-ratio:1}#gr{height:470px;touch-action:pan-y;cursor:crosshair}
+#map,#rs{aspect-ratio:4/3}#gg{aspect-ratio:1}#gr{height:470px;touch-action:none;cursor:crosshair}
+.zb{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}
+.zb button{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--ln);border-radius:4px;padding:4px 10px}
+.zb button:focus-visible{outline:3px solid var(--ac)}
+.cfg{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px}
+.cfg input[type=number]{width:72px}
+#cs{color:var(--mut);font-size:12px;flex-basis:100%}
+.hint{color:var(--mut);font-size:12px;margin-top:4px}
 #ro{font-variant-numeric:tabular-nums;font-size:15px;min-height:1.4em;margin-top:6px}
 </style>
 </head>
@@ -27,21 +34,32 @@ canvas{display:block;width:100%}
 <header>
   <input type="file" id="f" accept=".csv,text/csv" aria-label="CSVファイルを選択">
   <label>ラップ <select id="lap"><option value="all">全て</option></select></label>
+  <label>横軸 <select id="xm"><option value="d">距離</option><option value="t">時間</option></select></label>
   <label>平滑化 <input type="range" id="sm" min="1" max="31" step="2" value="9"></label>
   <span id="st">CSVを選ぶと表示します。</span>
 </header>
+<div class="p cfg">
+  <b>携帯位置の補正</b>
+  <label>重心から 前(+)/後(−) <input type="number" id="pf" step="0.05" value="0"> m</label>
+  <label>右(+)/左(−) <input type="number" id="pr" step="0.05" value="0"> m</label>
+  <label><input type="checkbox" id="cc"> 横G・前後Gを補正する</label>
+  <label>取り付け <select id="mt"><option value="x">平置き（短辺が左右）</option><option value="y">平置き（長辺が左右）</option><option value="z">立てる（短辺が左右）</option></select></label>
+  <span id="cs"></span>
+</div>
 <main>
   <div class="col">
     <div class="p"><div class="t">走行ライン（色=横Gの大きさ：青→赤）</div><canvas id="map"></canvas></div>
     <div class="p"><div class="t">Gサークル（横G：左右／前後G：上下）</div><canvas id="gg"></canvas></div>
     <div class="p"><div class="t">横G と ロール角（点の傾き＝ロール量）</div><canvas id="rs"></canvas></div>
   </div>
-  <div class="p"><div class="t">車速（青）／横G（黄）／前後G（灰）／ロール（桃）／ピッチ（紫）　横軸=走行距離 m　※グラフをなぞると地図とGサークルが連動</div>
-    <canvas id="gr"></canvas><div id="ro"></div></div>
+  <div class="p"><div class="t">車速（km/h）／G（横・前後）／傾き（ロール・ピッチ）　単位ごとに別グラフ・時間軸は共通　※なぞると地図とGサークルが連動</div>
+    <div class="zb"><button id="zi">横 拡大</button><button id="zo">横 縮小</button><button id="yi">縦 拡大</button><button id="yo">縦 縮小</button><button id="z0">全体表示</button></div>
+    <canvas id="gr"></canvas><div id="ro"></div>
+    <div class="hint">PC: ホイール=横ズーム／Shift+ホイール=そのグラフだけ縦ズーム／ドラッグ=移動　スマホ: 2本指=ズーム・移動、1本指=カーソル</div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id);
-let R=[],sel=[],ci=0,Rg=1.5,Rr=2,X1=1,mp=null;
+let R=[],sel=[],ci=0,Rg=1.5,Rr=2,Rp=1,X1=1,mp=null;
 
 function ctx(c){const d=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
   if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d);}
@@ -51,27 +69,69 @@ function parse(txt){
   const L=txt.replace(/^\ufeff/,'').trim().split(/\r?\n/), h=L[0].split(',');
   R=L.slice(1).map(l=>{const c=l.split(','),o={};h.forEach((k,i)=>o[k]=c[i]);
     const n=k=>o[k]===''||o[k]==null?NaN:+o[k];
-    return{t:n('epoch_ms'),lat:n('lat_g'),lon:n('lon_g'),la:n('gps_lat'),lo:n('gps_lon'),v:n('speed_kmh'),gt:o.gps_time,lap:n('lap')||0,roll:n('roll_deg'),pitch:n('pitch_deg')};
+    return{t:n('epoch_ms'),lat:n('lat_g'),lon:n('lon_g'),la:n('gps_lat'),lo:n('gps_lon'),v:n('speed_kmh'),gt:o.gps_time,lap:n('lap')||0,roll:n('roll_deg'),pitch:n('pitch_deg'),h:n('heading'),rx:n('rot_beta'),ry:n('rot_gamma'),rz:n('rot_alpha'),mt:o.mount};
   }).filter(r=>isFinite(r.t)&&isFinite(r.lat));
   let d=0;R.forEach((r,i)=>{if(i){d+=(isFinite(r.v)?r.v:0)/3.6*(r.t-R[i-1].t)/1000;}r.d=d;});
   const laps=[...new Set(R.map(r=>r.lap))].sort((a,b)=>a-b);
   $('lap').innerHTML='<option value="all">全て</option>'+laps.map(n=>'<option value="'+n+'">'+(n===0?'計測前（ラップ0）':'ラップ '+n)+'</option>').join('');
-  smooth();ci=0;update();
+  if(R[0]&&UP[R[0].mt])$('mt').value=R[0].mt;smooth();ci=0;$('xm').value=R.length&&R[R.length-1].d<100?'t':'d';update();
 }
+const UP={x:[0,0,1],y:[0,0,1],z:[0,1,0]},G=9.80665;   // 取り付けごとの「車の上方向」(端末座標)
 function smooth(){
-  const k=(+$('sm').value)>>1,K=['lat','lon','roll','pitch'],S=K.map(()=>[0]);
+  const k=(+$('sm').value)>>1,K=['lat','lon','roll','pitch','wu'],S=K.map(()=>[0]),U=UP[$('mt').value]||UP.x;
+  R.forEach(r=>{r.wu=(r.rx||0)*U[0]+(r.ry||0)*U[1]+(r.rz||0)*U[2];});   // 垂直軸まわりのジャイロ(°/s)
   R.forEach((r,i)=>K.forEach((q,j)=>S[j].push(S[j][i]+(isFinite(r[q])?r[q]:0))));
   R.forEach((r,i)=>{const a=Math.max(0,i-k),b=Math.min(R.length,i+k+1);
-    [r.sl,r.so,r.sr,r.sp]=S.map(t=>(t[b]-t[a])/(b-a));
+    [r.sl,r.so,r.sr,r.sp,r.sw]=S.map(t=>(t[b]-t[a])/(b-a));
+    r.sl0=r.sl;r.so0=r.so;
     if(!isFinite(r.roll))r.sr=r.sp=NaN;});
+  applyCorr(k);
 }
-function update(){
+// GPSの方位変化・速度変化と比べて、横G・前後G・ジャイロの符号を推定する
+function est(){
+  const F=[];let last=null;
+  for(const r of R){
+    if(!isFinite(r.la))continue;
+    if(last&&last.gt===r.gt){last.n++;last.l+=r.sl0;last.o+=r.so0;last.w+=r.sw;continue;}
+    last={gt:r.gt,t:+r.gt,h:r.h,v:r.v,n:1,l:r.sl0,o:r.so0,w:r.sw};F.push(last);
+  }
+  const mk=()=>({xy:0,xx:0,yy:0,n:0}),A=mk(),B=mk(),C=mk();
+  const add=(a,x,y)=>{a.xy+=x*y;a.xx+=x*x;a.yy+=y*y;a.n++;};
+  for(let i=1;i<F.length;i++){
+    const p=F[i-1],q=F[i],dt=(q.t-p.t)/1000;
+    if(!(dt>0.3&&dt<3)||!(p.v>15&&q.v>15))continue;
+    let dh=q.h-p.h;if(!isFinite(dh))continue;dh=((dh+540)%360)-180;
+    const rate=dh/dt,dv=(q.v-p.v)/3.6/dt;
+    add(A,p.l/p.n,rate);add(B,p.o/p.n,dv);add(C,p.w/p.n,rate);
+  }
+  const rho=a=>a.n>=5?a.xy/Math.sqrt(a.xx*a.yy||1):0;
+  const ra=rho(A),rb=rho(B),rc=rho(C),ok=Math.abs(ra)>0.3&&Math.abs(rb)>0.3&&Math.abs(rc)>0.3;
+  const E={sr:ra<0?-1:1,sf:rb<0?-1:1,sw:rc<0?-1:1,ok};
+  if(!F.length)E.msg='';
+  else if(ok)E.msg='符号を自動判定: 横G＋=' +(E.sr>0?'右':'左')+'旋回 ／ 前後G＋='+(E.sf>0?'加速':'減速')+' ／ ジャイロ÷GPS方位変化 = '+Math.abs(C.xy/C.yy).toFixed(2)+'（1付近が正常）';
+  else E.msg='符号を判定できません（走行中に曲がる・加減速するデータが必要）→ 補正は無効です';
+  return E;
+}
+// 重心からずれた位置の加速度を、重心の値に直す（ヨー運動による分。高さ方向のずれは対象外）
+function applyCorr(k){
+  const pf=+$('pf').value||0,pr=+$('pr').value||0,E=est();
+  $('cs').textContent=E.msg;
+  if(!$('cc').checked||!E.ok||(!pf&&!pr))return;
+  const k2=Math.max(k,4),n=R.length,d2r=Math.PI/180;
+  R.forEach((r,i)=>{
+    const a=R[Math.max(0,i-k2)],b=R[Math.min(n-1,i+k2)],dt=(b.t-a.t)/1000;
+    const w=E.sw*r.sw*d2r,al=dt>0?E.sw*(b.sw-a.sw)/dt*d2r:0;   // ヨーレート rad/s（右旋回が正）, ヨー角加速度
+    r.sl=r.sl0+E.sr*((-al*pf+w*w*pr)/G);
+    r.so=r.so0+E.sf*((al*pr+w*w*pf)/G);
+  });
+}
+function update(keep){
   const L=$('lap').value;
   sel=R.filter(r=>L==='all'||r.lap==L);
   if(!sel.length){draw();return;}
-  const d0=sel[0].d;let m=0,vm=0,pk=0,mo=0;
-  sel.forEach(r=>{r.x=r.d-d0;m=Math.max(m,Math.abs(r.sl),Math.abs(r.so));pk=Math.max(pk,Math.abs(r.sl));mo=Math.max(mo,Math.abs(r.sr)||0,Math.abs(r.sp)||0);if(r.v>vm)vm=r.v;});
-  X1=sel[sel.length-1].x||1;Rg=Math.max(1.5,Math.ceil(m*2)/2);Rr=Math.max(2,Math.ceil(mo));ci=Math.min(ci,sel.length-1);
+  const d0=sel[0].d,t0=sel[0].t,tm=$('xm').value==='t';let m=0,vm=0,pk=0,mo=0,mq=0;
+  sel.forEach(r=>{r.x=tm?(r.t-t0)/1000:r.d-d0;m=Math.max(m,Math.abs(r.sl),Math.abs(r.so));pk=Math.max(pk,Math.abs(r.sl));mo=Math.max(mo,Math.abs(r.sr)||0);mq=Math.max(mq,Math.abs(r.sp)||0);if(r.v>vm)vm=r.v;});
+  X1=sel[sel.length-1].x||1;if(!keep){vx0=0;vx1=X1;ysc=[1,1,1,1,1];}Rg=Math.max(1.5,Math.ceil(m*2)/2);Rr=Math.max(2,Math.ceil(mo));Rp=Math.max(1,Math.ceil(mq));ci=Math.min(ci,sel.length-1);
   $('st').textContent='最大横G '+pk.toFixed(2)+' G ／ 最高速 '+vm.toFixed(0)+' km/h ／ 距離 '+(X1/1000).toFixed(2)+' km';
   draw();
 }
@@ -113,31 +173,53 @@ function drawGG(){
 }
 
 const GL=44,GR=8;
+let vx0=0,vx1=1,ysc=[1,1,1,1,1],lay=null;
+const nice=(span,n)=>{const r=span/n,p=Math.pow(10,Math.floor(Math.log10(r))),f=r/p;return(f<1.5?1:f<3.5?2:f<7.5?5:10)*p;};
+function idx(x){let a=0,b=sel.length-1;while(a<b){const m=(a+b)>>1;if(sel[m].x<x)a=m+1;else b=m;}return a;}
 function drawGr(){
+  const hasO=sel.some(r=>isFinite(r.sr)),n=hasO?3:2;
+  $('gr').style.height=(n*150+22)+'px';
   const[g,w,h]=ctx($('gr'));
   if(!sel.length)return;
-  const hasO=sel.some(r=>isFinite(r.sr)),n=hasO?3:2,T=6,ph=(h-16-T)/n;
+  const T=6,ph=(h-16-T)/n,pw=w-GL-GR,span=vx1-vx0,px=x=>GL+(x-vx0)/span*pw;
   const y0=i=>T+i*ph,y1=i=>T+(i+1)*ph-10;
-  const py=(i,v,lo,hi)=>y1(i)-(v-lo)/(hi-lo)*(y1(i)-y0(i));
   let vm=0;sel.forEach(r=>{if(r.v>vm)vm=r.v;});vm=Math.ceil((vm||50)/50)*50;
-  const px=x=>GL+x/X1*(w-GL-GR);
-  g.font='11px sans-serif';g.lineWidth=1;g.strokeStyle='#35373b';g.fillStyle='#8a8a85';
-  const grid=(i,lo,hi,st,fmt)=>{for(let v=Math.ceil(lo/st)*st;v<=hi;v+=st){const y=py(i,v,lo,hi);
-    g.beginPath();g.moveTo(GL,y);g.lineTo(w-GR,y);g.stroke();g.fillText(fmt(v),4,y+4);}};
-  grid(0,0,vm,50,v=>v);grid(1,-Rg,Rg,1,v=>v+'G');
-  if(hasO)grid(2,-Rr,Rr,Rr>6?5:Rr>3?2:1,v=>v+'°');
-  const step=X1>3000?1000:X1>1000?500:100;
-  for(let x=0;x<=X1;x+=step)g.fillText(x+'m',px(x)-10,h-4);
-  const st=Math.max(1,Math.floor(sel.length/(w*1.5)));
-  const ln=(i,col,f,lo,hi)=>{g.strokeStyle=col;g.lineWidth=1.6;g.beginPath();let on=false;
-    for(let k=0;k<sel.length;k+=st){const r=sel[k],y=py(i,f(r),lo,hi);if(!isFinite(y)){on=false;continue;}
-      on?g.lineTo(px(r.x),y):g.moveTo(px(r.x),y);on=true;}g.stroke();};
-  ln(1,'#7f8ea3',r=>r.so,-Rg,Rg);ln(0,'#38bdf8',r=>r.v,0,vm);ln(1,'#ffc928',r=>r.sl,-Rg,Rg);
-  if(hasO){ln(2,'#ff5d8f',r=>r.sr,-Rr,Rr);ln(2,'#a78bfa',r=>r.sp,-Rr,Rr);}
-  const r=sel[ci];
-  if(r){g.strokeStyle='#fff';g.lineWidth=1;g.beginPath();g.moveTo(px(r.x),0);g.lineTo(px(r.x),h-16);g.stroke();
-    $('ro').textContent=r.x.toFixed(0)+' m ／ '+(isFinite(r.v)?r.v.toFixed(0):'--')+' km/h ／ 横G '+r.sl.toFixed(2)+' ／ 前後G '+r.so.toFixed(2)
-      +(hasO?' ／ ロール '+r.sr.toFixed(1)+'° ／ ピッチ '+r.sp.toFixed(1)+'°':'');}
+  // 単位が違うものは別グラフ。同じ単位(G同士、角度同士)は同じグラフに重ねる。時間軸は全グラフで共通
+  const P=[
+    {lo:0,hi:vm,S:[{n:'車速',u:' km/h',c:'#38bdf8',f:r=>r.v,d:0}]},
+    {lo:-Rg,hi:Rg,S:[{n:'横G',u:' G',c:'#ffc928',f:r=>r.sl,d:2},{n:'前後G',u:' G',c:'#7f8ea3',f:r=>r.so,d:2}]}];
+  if(hasO){const Ra=Math.max(Rr,Rp);
+    P.push({lo:-Ra,hi:Ra,S:[{n:'ロール',u:'°',c:'#ff5d8f',f:r=>r.sr,d:1},{n:'ピッチ',u:'°',c:'#a78bfa',f:r=>r.sp,d:1}]});}
+  lay=P.map((_,i)=>[y0(i),y1(i)]);
+  const tm=$('xm').value==='t',xs=nice(span,6);
+  const i0=Math.max(0,idx(vx0)-1),i1=Math.min(sel.length-1,idx(vx1)+1),st=Math.max(1,Math.floor((i1-i0)/(pw*1.5)));
+  const cr=sel[ci];
+  P.forEach((p,i)=>{
+    const lo=p.lo/ysc[i],hi=p.hi/ysc[i],py=v=>y1(i)-(v-lo)/(hi-lo)*(y1(i)-y0(i));
+    g.font='11px sans-serif';g.lineWidth=1;g.strokeStyle='#35373b';g.fillStyle='#8a8a85';
+    g.strokeRect(GL,y0(i),pw,y1(i)-y0(i));
+    const gs=nice(hi-lo,4);
+    for(let k=Math.ceil(lo/gs);k*gs<=hi+1e-9;k++){const v=+(k*gs).toFixed(3),y=py(v);
+      g.beginPath();g.moveTo(GL,y);g.lineTo(w-GR,y);g.stroke();g.fillText(v,4,y+4);}
+    for(let k=Math.ceil(vx0/xs);k*xs<=vx1;k++){const x=px(k*xs);g.beginPath();g.moveTo(x,y0(i));g.lineTo(x,y1(i));g.stroke();}
+    g.save();g.beginPath();g.rect(GL,y0(i),pw,y1(i)-y0(i));g.clip();
+    p.S.forEach(q=>{
+      g.strokeStyle=q.c;g.lineWidth=1.6;g.beginPath();let on=false;
+      for(let k=i0;k<=i1;k+=st){const r=sel[k],y=py(q.f(r));if(!isFinite(y)){on=false;continue;}
+        on?g.lineTo(px(r.x),y):g.moveTo(px(r.x),y);on=true;}
+      g.stroke();});
+    g.restore();
+    g.font='bold 12px sans-serif';let lx=GL+6;
+    p.S.forEach(q=>{const v=cr?q.f(cr):NaN,t=q.n+' '+(isFinite(v)?v.toFixed(q.d):'--')+q.u;
+      g.fillStyle=q.c;g.fillText(t,lx,y0(i)+14);lx+=g.measureText(t).width+16;});
+  });
+  g.fillStyle='#8a8a85';g.font='11px sans-serif';
+  for(let k=Math.ceil(vx0/xs);k*xs<=vx1;k++)g.fillText((+(k*xs).toFixed(2))+(tm?'s':'m'),px(k*xs)-10,h-4);
+  if(cr){
+    if(cr.x>=vx0&&cr.x<=vx1){g.strokeStyle='#fff';g.lineWidth=1;g.beginPath();g.moveTo(px(cr.x),T);g.lineTo(px(cr.x),h-16);g.stroke();}
+    $('ro').textContent=cr.x.toFixed(tm?1:0)+(tm?' s':' m')+' ／ '+(isFinite(cr.v)?cr.v.toFixed(0):'--')+' km/h ／ 横G '+cr.sl.toFixed(2)+' ／ 前後G '+cr.so.toFixed(2)
+      +(hasO?' ／ ロール '+cr.sr.toFixed(1)+'° ／ ピッチ '+cr.sp.toFixed(1)+'°':'');
+  }
 }
 
 function drawRS(){
@@ -166,17 +248,50 @@ function drawRS(){
 }
 function draw(){drawMap();drawGG();drawGr();drawRS();}
 
+const gr=$('gr'),pt=new Map();let drag=null,pinch=null;
+const fracX=cx=>(cx-gr.getBoundingClientRect().left-GL)/(gr.clientWidth-GL-GR);
 function seek(e){
   if(!sel.length)return;
-  const b=$('gr').getBoundingClientRect(),x=(e.clientX-b.left-GL)/(b.width-GL-GR)*X1;
-  let a=0,z=sel.length-1;while(a<z){const m=(a+z)>>1;if(sel[m].x<x)a=m+1;else z=m;}
-  ci=a;draw();
+  const x=vx0+fracX(e.clientX)*(vx1-vx0);
+  ci=idx(Math.min(Math.max(x,vx0),vx1));draw();
 }
-$('gr').addEventListener('pointermove',seek);
-$('gr').addEventListener('pointerdown',seek);
+function clampView(){const sp=vx1-vx0;if(vx0<0){vx0=0;vx1=sp;}if(vx1>X1){vx1=X1;vx0=Math.max(0,X1-sp);}}
+function zoomAt(f,k){
+  if(!sel.length)return;
+  const sp=vx1-vx0,ns=Math.min(X1,Math.max(X1/1000,sp*k)),c=vx0+f*sp;
+  vx0=c-f*ns;vx1=vx0+ns;clampView();draw();
+}
+function panBy(dx){
+  if(!sel.length)return;
+  const sp=vx1-vx0,d=dx/(gr.clientWidth-GL-GR)*sp;vx0-=d;vx1-=d;clampView();draw();
+}
+const setY=(k,i)=>{(i==null?[0,1,2,3,4]:[i]).forEach(j=>ysc[j]=Math.min(20,Math.max(.25,ysc[j]*k)));draw();};
+gr.addEventListener('wheel',e=>{e.preventDefault();const k=Math.exp((e.deltaY||e.deltaX)*0.0015);
+  if(e.shiftKey){const y=e.clientY-gr.getBoundingClientRect().top,i=lay?lay.findIndex(q=>y>=q[0]&&y<=q[1]+10):-1;setY(1/k,i<0?null:i);}
+  else zoomAt(fracX(e.clientX),k);},{passive:false});
+gr.onpointerdown=e=>{
+  gr.setPointerCapture(e.pointerId);pt.set(e.pointerId,e.clientX);
+  if(e.pointerType==='mouse'){drag=e.clientX;}
+  else if(pt.size===2){const v=[...pt.values()];pinch={d:Math.abs(v[0]-v[1]),c:(v[0]+v[1])/2};}
+  else seek(e);
+};
+gr.onpointermove=e=>{
+  if(!pt.has(e.pointerId)){seek(e);return;}            // マウスのホバー=カーソル移動
+  pt.set(e.pointerId,e.clientX);
+  if(e.pointerType==='mouse'){panBy(e.clientX-drag);drag=e.clientX;}
+  else if(pt.size===2&&pinch){const v=[...pt.values()],d=Math.abs(v[0]-v[1]),c=(v[0]+v[1])/2;
+    zoomAt(fracX(c),pinch.d/Math.max(d,1));panBy(c-pinch.c);pinch={d,c};}
+  else seek(e);
+};
+gr.onpointerup=gr.onpointercancel=e=>{pt.delete(e.pointerId);drag=null;pinch=null;};
+$('zi').onclick=()=>zoomAt(.5,.6);$('zo').onclick=()=>zoomAt(.5,1/.6);
+$('yi').onclick=()=>setY(1.5);$('yo').onclick=()=>setY(1/1.5);
+$('z0').onclick=()=>{vx0=0;vx1=X1;ysc=[1,1,1,1,1];draw();};
 $('f').onchange=async e=>{const f=e.target.files[0];if(f)parse(await f.text());};
+$('xm').onchange=()=>update();
 $('lap').onchange=()=>{ci=0;update();};
-$('sm').oninput=()=>{if(R.length){smooth();update();}};
+$('sm').oninput=()=>{if(R.length){smooth();update(true);}};
+['pf','pr','cc','mt'].forEach(id=>$(id).addEventListener('input',()=>{if(R.length){smooth();update(true);}}));
 addEventListener('resize',draw);
 </script>
 </body>
